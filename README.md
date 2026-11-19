@@ -33,14 +33,47 @@ It does not transcribe anything itself. It only produces the audio file.
 - **Survives crashes.** Audio is written in 60-second part files and forced to disk every
   2 seconds, so a crash or power cut loses at most about 2 seconds. When you stop, the parts
   are joined into `recordings/meeting-YYYYMMDD-HHMMSS.wav`.
-- **Linux too.** On Linux it records everything the default output plays, plus the
-  microphone. Per-app capture is Windows-only for now.
+- **Linux too.** On Linux it records the output device Chrome plays to and the microphone
+  Chrome uses, even when they are not the system default (for example a USB or Bluetooth
+  headset), and follows them if you switch devices mid-meeting. Everything else playing on that
+  same device is recorded too; true per-app capture is Windows-only for now. At the start, and on
+  every switch, it prints which device it is recording from.
 
 ## Status
 
 Early version. The mixing, chunked writing and joining are covered by tests. The Windows
 process-loopback capture still needs testing on more Windows machines. Run `test.bat` first,
 because it starts a real one-second capture.
+
+### Change log
+
+**2026-11-19**
+
+- **Linux bug fixed: meetings on a headset were recorded as silence.** The Linux capture used to
+  record only the *default* output and the *default* microphone. A meeting played on a USB headset
+  (Jabra Link 380) that was not the default was not captured at all: a 22-minute Spanish meeting
+  came out at about -58 dB, and only the last words were left in the transcript. The earlier test
+  passed because the sound then came from the laptop speakers, which were the default. Now the
+  recorder follows the devices Chrome uses (`meetrec/sources/linux_pulse.py`).
+  Tested: a tone played "as Chrome" on the Jabra, with the laptop speakers as the default, was
+  recorded; a recording stream opened "as Chrome" on the Jabra mic was picked as the microphone.
+  **Still to test in a real meeting.**
+- **New: `meetrec transcribe`** (local Whisper, `transcribe.bat`). It reads our WAV files itself,
+  because faster-whisper 1.2.1 cannot open files with PyAV 19 (`unexpected keyword argument
+  'metadata_errors'`). It runs at lowest CPU priority on 2 cores by default, so the computer stays
+  usable (`--threads` for more).
+- **New: `meetrec translate`** (Claude through the `claude` command, `translate.bat`). Tested on a
+  short Spanish sample into Persian; not yet run on a full meeting.
+
+### How to test (checklist)
+
+1. Join a meeting in Chrome, with the headset you normally use.
+2. Start `record`. The first lines must name your headset:
+   `system: recording from <headset>` and `mic: recording from <headset mic>`.
+3. While someone talks, the `system` bar must move; while you talk, the `mic` bar must move.
+   If the `system` bar stays at `....................`, the meeting is not being recorded.
+4. After a few minutes, stop with Ctrl+C. Then run `transcribe ... --lang <language>`, and after
+   that `translate ... --to <language>`.
 
 ## Requirements
 
@@ -88,10 +121,10 @@ Add these after `record.bat` in a terminal, or after `python -m meetrec record`:
 
 | option | meaning |
 |---|---|
-| `--app msedge` | record Edge, `firefox` or a process id instead of Chrome (Windows) |
+| `--app msedge` | record Edge, `firefox` or a process id instead of Chrome (on Linux: follow that app's devices, e.g. `--app brave`) |
 | `--all-system` | record all system audio instead of one app |
 | `--no-mic` | do not record the microphone |
-| `--mic 3` | choose a microphone; list them with `python -m meetrec devices` |
+| `--mic 3` | choose a fixed microphone instead of the app's; list them with `python -m meetrec devices` |
 | `--mic-gain 1.5`, `--system-gain 0.8` | balance the two sides of the mix |
 | `--rate 48000` | output sample rate: 16000 (default), 24000 or 48000 |
 | `--out D:\meetings` | output folder (default `recordings`) |
@@ -108,14 +141,36 @@ python -m meetrec assemble recordings\meeting-20261110-153000.parts
 
 ## Transcribing the result
 
-Any speech-to-text tool that accepts WAV will work. For example, locally with
-[faster-whisper](https://github.com/SYSTRAN/faster-whisper):
+### 1. Transcribe (local, free)
 
-```sh
-pip install faster-whisper
-python -c "from faster_whisper import WhisperModel; m = WhisperModel('large-v3'); \
-print(''.join(s.text for s in m.transcribe('recordings/meeting-....wav')[0]))"
-```
+Runs [faster-whisper](https://github.com/SYSTRAN/faster-whisper) on your own computer. The
+model (about 1.6 GB) is downloaded once; after that no internet is needed.
+
+- Windows: drag the `.wav` onto **`transcribe.bat`**, or `transcribe.bat recordings\meeting-....wav --lang es`
+- Linux: `.venv/bin/python -m meetrec transcribe recordings/meeting-....wav --lang es`
+
+It writes `meeting-....txt` (one line per sentence, with `[hh:mm:ss]` timestamps) and
+`meeting-....srt` (subtitles) next to the WAV.
+
+| option | meaning |
+|---|---|
+| `--lang es` | spoken language (`en`, `fa`, `de`, ...). Leave out to detect it |
+| `--model large-v3` | best quality but about 4x slower. Default `large-v3-turbo`; `medium`, `small` are faster |
+| `--out folder` | where to write the files |
+| `--threads 4` | CPU cores to use. Default 2, at lowest priority, so the computer stays usable |
+
+With the default 2 cores, expect roughly as long as the meeting itself, or more.
+
+### 2. Translate (Claude)
+
+Uses the [Claude Code](https://claude.com/claude-code) command `claude`, with whatever login it
+already has. The timestamps are kept, one translated line per original line.
+
+- Windows: `translate.bat recordings\meeting-....txt --to English`
+- Linux: `.venv/bin/python -m meetrec translate recordings/meeting-....txt --to Persian`
+
+It writes `meeting-....english.txt` (or `.persian.txt`, ...). `--model opus` uses a stronger
+model; `--chunk-lines` sets how many lines go to Claude per call (default 120).
 
 ## How it works
 
@@ -128,7 +183,7 @@ microphone (PortAudio) ──────────┘
 | file | role |
 |---|---|
 | `meetrec/sources/win_process_loopback.py` | Windows per-process capture (`ActivateAudioInterfaceAsync`, pure ctypes) |
-| `meetrec/sources/linux_monitor.py` | Linux capture of the default output (`parec`) |
+| `meetrec/sources/linux_pulse.py` | Linux capture (`parec`) that follows the app's output and microphone |
 | `meetrec/sources/mic.py` | microphone capture (`sounddevice`) |
 | `meetrec/mixer.py` | clock-driven mixing, silence filling, drift handling |
 | `meetrec/resample.py` | 48 kHz to 16/24 kHz low-pass decimation |

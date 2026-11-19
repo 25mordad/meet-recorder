@@ -14,6 +14,10 @@ from .wavfiles import ChunkedRecorder, assemble
 MIX_RATE = 48000
 
 
+def _announce(label, description):
+    print(f"\n{label}: recording from {description}", flush=True)
+
+
 def build_system_source(buffer, app, all_system):
     if sys.platform == "win32":
         from .sources import procs
@@ -29,8 +33,19 @@ def build_system_source(buffer, app, all_system):
             if pid is None:
                 raise RuntimeError(f"{name} is not running. Open the meeting in it first, then start recording.")
         return ProcessLoopbackSource(buffer, pid, include_tree=True), f"{app} (pid {pid})"
-    from .sources.linux_monitor import PulseMonitorSource
-    return PulseMonitorSource(buffer, MIX_RATE), "all system audio (default output monitor)"
+    from .sources.linux_pulse import FollowingPulseSource
+    if all_system:
+        return FollowingPulseSource(buffer, MIX_RATE, "sink", None, _announce), "everything on the default output"
+    return (FollowingPulseSource(buffer, MIX_RATE, "sink", app, _announce),
+            f"the output {app} plays to (falls back to the default output)")
+
+
+def build_mic_source(buffer, app, mic_device):
+    if sys.platform != "win32" and mic_device is None:
+        from .sources.linux_pulse import FollowingPulseSource
+        return FollowingPulseSource(buffer, MIX_RATE, "source", app, _announce)
+    from .sources.mic import MicSource
+    return MicSource(buffer, MIX_RATE, mic_device)
 
 
 def _bar(level, width=20):
@@ -56,9 +71,8 @@ def record(out_dir, app="chrome", all_system=False, mic=True, mic_device=None, r
     gains.append(system_gain)
     mic_buf = None
     if mic:
-        from .sources.mic import MicSource
         mic_buf = SampleBuffer()
-        sources.append(MicSource(mic_buf, MIX_RATE, mic_device))
+        sources.append(build_mic_source(mic_buf, app, mic_device))
         buffers.append(mic_buf)
         gains.append(mic_gain)
 

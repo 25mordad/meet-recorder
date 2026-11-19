@@ -3,7 +3,7 @@ rem One-time setup: creates .venv and installs dependencies. Needs Python 3.10+ 
 cd /d "%~dp0"
 py -3 -m venv .venv || python -m venv .venv || goto :error
 .venv\Scripts\python -m pip install --upgrade pip
-.venv\Scripts\python -m pip install -r requirements.txt -r requirements-dev.txt || goto :error
+.venv\Scripts\python -m pip install -r requirements.txt -r requirements-dev.txt -r requirements-transcribe.txt || goto :error
 echo.
 echo Setup done. Run tests with:  test.bat
 echo Record a meeting with:      record.bat
